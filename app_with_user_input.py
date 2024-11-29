@@ -52,7 +52,7 @@ def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit):
 # Streamlit app
 def main():
     # Display the logo at the top
-    st.image("DigiPatchLogo.png", width=150)  # Replace "logo.png" with the actual path to the logo file
+    st.image("DigiPatchLogo.png", width=500)  # Replace "logo.png" with the actual path to the logo file
     st.title("WP4 DigiPatch: Reddit post data collection")
     st.markdown("This tool allows users to collect Reddit post data for analysis.")
 
