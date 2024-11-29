@@ -55,6 +55,7 @@ def main():
     st.image("DigiPatchLogo.png", width=700)  # Replace "logo.png" with the actual path to the logo file
     st.title("WP4 DigiPatch: Reddit post data collection")
     st.markdown("This tool allows users to collect Reddit post data for analysis.")
+    st.markdown("https://digipatch.eu/")
 
     # User credentials input
     st.header("Reddit API Credentials")
