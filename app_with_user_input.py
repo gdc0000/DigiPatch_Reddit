@@ -1,6 +1,3 @@
-
-# app.py
-
 import streamlit as st
 import datetime
 import pandas as pd
@@ -8,7 +5,7 @@ import praw
 from praw.exceptions import APIException
 from tqdm import tqdm
 
-# Function to initialize Reddit instance with user-provided credentials
+# Function to initialize Reddit instance
 def initialize_reddit(client_id, client_secret, username, password):
     try:
         reddit = praw.Reddit(
@@ -19,7 +16,6 @@ def initialize_reddit(client_id, client_secret, username, password):
             username=username,
             check_for_async=False
         )
-        # Test if authentication is successful
         if reddit.read_only:
             st.error("Authentication failed: Reddit is in read-only mode.")
         return reddit
@@ -55,7 +51,8 @@ def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit):
 
 # Streamlit app
 def main():
-    # Application title
+    # Display the logo at the top
+    st.image("DigiPatchLogo.png", width=150)  # Replace "logo.png" with the actual path to the logo file
     st.title("WP4 DigiPatch: Reddit post data collection")
     st.markdown("This tool allows users to collect Reddit post data for analysis.")
 
