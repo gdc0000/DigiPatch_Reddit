@@ -61,8 +61,6 @@ def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit):
 
 # Streamlit app
 def main():
-    # Footer Section
-    add_footer()
     # Display the logo at the top
     st.image("DigiPatchLogo.png", width=700)  # Replace "logo.png" with the actual path to the logo file
     st.title("WP4 DigiPatch: Reddit post data collection")
@@ -109,6 +107,9 @@ def main():
                 st.error('Please enter a subreddit name')
         else:
             st.error('Please enter all Reddit API credentials')
+    
+    # Footer Section
+    add_footer()
 
 if __name__ == "__main__":
     main()
