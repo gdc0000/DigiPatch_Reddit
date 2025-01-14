@@ -5,6 +5,16 @@ import praw
 from praw.exceptions import APIException
 from tqdm import tqdm
 
+def add_footer():
+    st.markdown("---")
+    st.markdown("### **Gabriele Di Cicco, PhD in Social Psychology**")
+    st.markdown("""
+    [GitHub](https://github.com/gdc0000) | 
+    [ORCID](https://orcid.org/0000-0002-1439-5790) | 
+    [LinkedIn](https://www.linkedin.com/in/gabriele-di-cicco-124067b0/)
+    """)
+
+
 # Function to initialize Reddit instance
 def initialize_reddit(client_id, client_secret, username, password):
     try:
@@ -51,6 +61,8 @@ def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit):
 
 # Streamlit app
 def main():
+    # Footer Section
+    add_footer()
     # Display the logo at the top
     st.image("DigiPatchLogo.png", width=700)  # Replace "logo.png" with the actual path to the logo file
     st.title("WP4 DigiPatch: Reddit post data collection")
