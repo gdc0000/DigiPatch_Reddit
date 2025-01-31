@@ -4,6 +4,7 @@ import pandas as pd
 import praw
 from praw.exceptions import APIException
 from tqdm import tqdm
+import time
 
 def add_footer():
     st.markdown("---")
@@ -32,19 +33,31 @@ def initialize_reddit(client_id, client_secret, username, password):
         st.error(f"Error initializing Reddit: {e}")
         return None
 
-# Function to collect Reddit posts and (optionally) comments in one long-shaped dataset.
-def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_comments=False):
-    try:
-        subreddit = reddit.subreddit(subreddit_name)
-        combined_data = []
-        
-        # For each sorting method (e.g., 'hot', 'new', etc.)
+# Function to collect data from multiple subreddits, producing one long-shaped dataset.
+def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comments, sleep_time):
+    combined_data = []
+    # Estimate total iterations for progress tracking:
+    total_iterations = len(subreddits) * len(sorting_methods) * limit
+    current_iteration = 0
+    progress_bar = st.progress(0)
+    
+    for subreddit_name in subreddits:
+        try:
+            subreddit = reddit.subreddit(subreddit_name)
+        except Exception as e:
+            st.error(f"Error accessing subreddit {subreddit_name}: {e}")
+            continue
+
         for sorting_method in sorting_methods:
-            st.write(f"Collecting posts sorted by **{sorting_method}**...")
-            posts = getattr(subreddit, sorting_method)(limit=limit)
-            
-            for post in tqdm(posts, desc=f"Collecting posts ({sorting_method})"):
-                # Collect post-level information
+            st.write(f"Collecting posts from **r/{subreddit_name}** sorted by **{sorting_method}**...")
+            try:
+                posts = getattr(subreddit, sorting_method)(limit=limit)
+            except Exception as e:
+                st.error(f"Error fetching posts for r/{subreddit_name} using {sorting_method}: {e}")
+                continue
+
+            for post in tqdm(posts, desc=f"r/{subreddit_name} - {sorting_method}"):
+                # Post-level details
                 post_id = post.id
                 post_title = post.title
                 post_author = str(post.author)
@@ -56,58 +69,55 @@ def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_
                 
                 if collect_comments:
                     try:
-                        # Retrieve all comments; skip "MoreComments" objects
                         post.comments.replace_more(limit=0)
                         comment_list = post.comments.list()
                     except Exception as e:
-                        st.error(f"Error collecting comments for post {post.id}: {e}")
+                        st.error(f"Error collecting comments for post {post.id} in r/{subreddit_name}: {e}")
                         comment_list = []
                     
-                    # If comments exist, create one row per comment.
+                    # If there are comments, add one row per comment.
                     if comment_list:
                         for comment in comment_list:
                             comment_author = str(comment.author) if comment.author else None
                             comment_score = comment.score
                             comment_body = comment.body
                             comment_timestamp = datetime.datetime.utcfromtimestamp(comment.created_utc)
-                            
                             row = [
-                                post_id, post_title, post_author, post_score, post_num_comments,
+                                subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                                 post_upvote_ratio, post_url, post_timestamp, sorting_method,
                                 comment_author, comment_score, comment_body, comment_timestamp
                             ]
                             combined_data.append(row)
                     else:
-                        # No comments found: add a row with comment fields set to None.
+                        # No comments: add one row with comment fields as None.
                         row = [
-                            post_id, post_title, post_author, post_score, post_num_comments,
+                            subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                             post_upvote_ratio, post_url, post_timestamp, sorting_method,
                             None, None, None, None
                         ]
                         combined_data.append(row)
                 else:
-                    # Not collecting comments: add one row with comment fields set to None.
+                    # Not collecting comments: add one row with empty comment fields.
                     row = [
-                        post_id, post_title, post_author, post_score, post_num_comments,
+                        subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                         post_upvote_ratio, post_url, post_timestamp, sorting_method,
                         None, None, None, None
                     ]
                     combined_data.append(row)
                     
-        return combined_data
-    except APIException as e:
-        st.error(f"Reddit API Exception: {e}")
-        return []
-    except Exception as e:
-        st.error(f"Error collecting data: {e}")
-        return []
+                # Update progress and pause briefly to mitigate API rate limitations.
+                current_iteration += 1
+                progress_bar.progress(min(current_iteration / total_iterations, 1.0))
+                time.sleep(sleep_time)
+                
+    return combined_data
 
 # Streamlit app
 def main():
     # Display the logo at the top
-    st.image("DigiPatchLogo.png", width=700)  # Replace with your actual logo file path
+    st.image("DigiPatchLogo.png", width=700)  # Replace with the actual path to your logo file
     st.title("WP4 DigiPatch: Reddit Data Collection")
-    st.markdown("This tool allows users to collect Reddit post and comment data for analysis.")
+    st.markdown("This tool allows users to collect Reddit post and comment data for analysis across multiple subreddits.")
     st.markdown("https://digipatch.eu/")
 
     # User credentials input
@@ -117,29 +127,38 @@ def main():
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    # User input for subreddit and data collection parameters
+    # Data collection parameters
     st.header("Subreddit and Data Parameters")
-    subreddit_name = st.text_input('Subreddit Name', '')
+    subreddits_input = st.text_input('Subreddit Names (comma-separated)', '')
     sorting_methods = st.multiselect(
         'Sorting Methods',
         ['hot', 'new', 'top', 'controversial', 'rising'],
         default=['hot']
     )
-    limit = st.number_input('Number of Posts', min_value=1, max_value=1000, value=10)
+    limit = st.number_input('Number of Posts per Subreddit (per sorting method)', min_value=1, max_value=1000, value=10)
     
-    # Option to collect comments as well
+    # Option to collect comments
     collect_comments = st.checkbox('Collect Comments', value=False)
+    
+    # Sleep time to mitigate API limitations
+    sleep_time = st.number_input('Sleep Time (seconds) between API calls', min_value=0.0, value=0.5, step=0.1, format="%.1f")
 
     if st.button('Collect Data'):
         if client_id and client_secret and username and password:
-            if subreddit_name:
+            if subreddits_input:
+                # Prepare the list of subreddits
+                subreddits = [s.strip() for s in subreddits_input.split(',') if s.strip()]
+                if not subreddits:
+                    st.error("Please enter at least one valid subreddit name.")
+                    return
+                
                 reddit = initialize_reddit(client_id, client_secret, username, password)
                 if reddit:
                     with st.spinner('Collecting data...'):
-                        data = collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_comments)
+                        data = collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comments, sleep_time)
                         if data:
                             columns = [
-                                "Post ID", "Post Title", "Post Author", "Post Score", "Post Num Comments",
+                                "Subreddit", "Post ID", "Post Title", "Post Author", "Post Score", "Post Num Comments",
                                 "Post Upvote Ratio", "Post URL", "Post Timestamp", "Sorting Method",
                                 "Comment Author", "Comment Score", "Comment Body", "Comment Timestamp"
                             ]
@@ -148,11 +167,11 @@ def main():
                             st.write(f"Data collected: **{df.shape[0]} records**")
                             st.write(df.head())
                             
-                            # Download the unified CSV file
+                            # Provide a download button for the complete CSV
                             csv = df.to_csv(index=False).encode('utf-8')
-                            st.download_button(label='Download CSV', data=csv, file_name=f'{subreddit_name}_data.csv')
+                            st.download_button(label='Download CSV', data=csv, file_name='reddit_data.csv')
             else:
-                st.error('Please enter a subreddit name')
+                st.error('Please enter at least one subreddit name')
         else:
             st.error('Please enter all Reddit API credentials')
     
