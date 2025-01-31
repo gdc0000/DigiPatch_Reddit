@@ -34,13 +34,24 @@ def initialize_reddit(client_id, client_secret, username, password):
         return None
 
 # Function to collect posts and comments from multiple subreddits.
-def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comments, sleep_time, max_comments):
+def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect_comments, sleep_time, comment_limit):
     combined_data = []
-    # Estimate total iterations for progress tracking:
-    total_iterations = len(subreddits) * len(sorting_methods) * limit
-    current_iteration = 0
-    progress_bar = st.progress(0)
+    # Calculate total iterations only if a fixed post limit is set.
+    if post_limit is not None:
+        total_iterations = len(subreddits) * len(sorting_methods) * post_limit
+    else:
+        total_iterations = None
     
+    # Initialize progress indicators.
+    progress_bar = None
+    progress_text = None
+    if total_iterations is not None:
+        progress_bar = st.progress(0)
+    else:
+        progress_text = st.empty()
+    
+    current_iteration = 0
+
     for subreddit_name in subreddits:
         try:
             subreddit = reddit.subreddit(subreddit_name)
@@ -51,7 +62,7 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comm
         for sorting_method in sorting_methods:
             st.write(f"Collecting posts from **r/{subreddit_name}** sorted by **{sorting_method}**...")
             try:
-                posts = getattr(subreddit, sorting_method)(limit=limit)
+                posts = getattr(subreddit, sorting_method)(limit=post_limit)
             except Exception as e:
                 st.error(f"Error fetching posts for r/{subreddit_name} using {sorting_method}: {e}")
                 continue
@@ -70,8 +81,12 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comm
                 if collect_comments:
                     try:
                         post.comments.replace_more(limit=0)
-                        # Get all comments and then limit to max_comments per post.
-                        comment_list = post.comments.list()[:max_comments]
+                        all_comments = post.comments.list()
+                        # If comment_limit is set, take only that many comments.
+                        if comment_limit is not None:
+                            comment_list = all_comments[:comment_limit]
+                        else:
+                            comment_list = all_comments
                     except Exception as e:
                         st.error(f"Error collecting comments for post {post.id} in r/{subreddit_name}: {e}")
                         comment_list = []
@@ -98,7 +113,7 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comm
                         ]
                         combined_data.append(row)
                 else:
-                    # Not collecting comments: add one row with empty comment fields.
+                    # Not collecting comments: add one row with comment fields as None.
                     row = [
                         subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                         post_upvote_ratio, post_url, post_timestamp, sorting_method,
@@ -108,12 +123,15 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comm
                 
                 # Update progress and sleep briefly to help mitigate API limitations.
                 current_iteration += 1
-                progress_bar.progress(min(current_iteration / total_iterations, 1.0))
+                if progress_bar is not None:
+                    progress_bar.progress(min(current_iteration / total_iterations, 1.0))
+                else:
+                    progress_text.text(f"Processed {current_iteration} posts...")
                 time.sleep(sleep_time)
                 
     return combined_data
 
-# Streamlit app
+# Streamlit app.
 def main():
     st.image("DigiPatchLogo.png", width=700)  # Replace with your logo file path.
     st.title("WP4 DigiPatch: Reddit Data Collection")
@@ -135,14 +153,24 @@ def main():
         ['hot', 'new', 'top', 'controversial', 'rising'],
         default=['hot']
     )
-    limit = st.number_input('Number of Posts per Subreddit (per sorting method)', min_value=1, max_value=1000, value=10)
     
+    # Post limit selection.
+    post_limit_option = st.radio("Select Post Limit", options=["Limit", "Maximum"], index=0)
+    if post_limit_option == "Limit":
+        post_limit = st.number_input("Number of Posts per Subreddit (per sorting method)", min_value=1, max_value=10000, value=10)
+    else:
+        post_limit = None  # No preset limit (collect maximum available posts)
+
     # Option to collect comments.
     collect_comments = st.checkbox('Collect Comments', value=False)
-    max_comments = None
+    comment_limit = None
     if collect_comments:
-        max_comments = st.number_input("Maximum Comments per Post", min_value=1, max_value=100, value=10)
-    
+        comment_limit_option = st.radio("Select Comment Limit per Post", options=["Limit", "Maximum"], index=0)
+        if comment_limit_option == "Limit":
+            comment_limit = st.number_input("Number of Comments per Post", min_value=1, max_value=10000, value=10)
+        else:
+            comment_limit = None  # No preset limit for comments
+
     # Sleep time to help mitigate API rate limitations.
     sleep_time = st.number_input('Sleep Time (seconds) between API calls', min_value=0.0, value=0.5, step=0.1, format="%.1f")
 
@@ -158,10 +186,7 @@ def main():
                 reddit = initialize_reddit(client_id, client_secret, username, password)
                 if reddit:
                     with st.spinner('Collecting data...'):
-                        # If not collecting comments, max_comments is not needed (set to 0).
-                        if not collect_comments:
-                            max_comments = 0
-                        data = collect_reddit_data(reddit, subreddits, sorting_methods, limit, collect_comments, sleep_time, max_comments)
+                        data = collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect_comments, sleep_time, comment_limit)
                         if data:
                             columns = [
                                 "Subreddit", "Post ID", "Post Title", "Post Author", "Post Score", "Post Num Comments",
