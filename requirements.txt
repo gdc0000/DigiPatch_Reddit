@@ -1,8 +1,4 @@
 streamlit
 praw
-tqdm
-matplotlib
-wordcloud
-scikit-learn
 pandas
-numpy
+tqdm
