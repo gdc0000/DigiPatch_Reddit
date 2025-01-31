@@ -32,63 +32,82 @@ def initialize_reddit(client_id, client_secret, username, password):
         st.error(f"Error initializing Reddit: {e}")
         return None
 
-# Function to collect Reddit posts and (optionally) comments
+# Function to collect Reddit posts and (optionally) comments in one long-shaped dataset.
 def collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_comments=False):
     try:
         subreddit = reddit.subreddit(subreddit_name)
-        all_posts = []
-        all_comments = []
-
+        combined_data = []
+        
+        # For each sorting method (e.g., 'hot', 'new', etc.)
         for sorting_method in sorting_methods:
             st.write(f"Collecting posts sorted by **{sorting_method}**...")
             posts = getattr(subreddit, sorting_method)(limit=limit)
-
+            
             for post in tqdm(posts, desc=f"Collecting posts ({sorting_method})"):
-                # Collect post data (including post id for linking to comments)
-                post_data = [
-                    post.id,
-                    post.title,
-                    str(post.author),
-                    post.score,
-                    post.num_comments,
-                    post.upvote_ratio,
-                    post.url,
-                    datetime.datetime.utcfromtimestamp(post.created_utc),
-                    sorting_method
-                ]
-                all_posts.append(post_data)
-
-                # If comments should be collected, get all comments for this post
+                # Collect post-level information
+                post_id = post.id
+                post_title = post.title
+                post_author = str(post.author)
+                post_score = post.score
+                post_num_comments = post.num_comments
+                post_upvote_ratio = post.upvote_ratio
+                post_url = post.url
+                post_timestamp = datetime.datetime.utcfromtimestamp(post.created_utc)
+                
                 if collect_comments:
                     try:
+                        # Retrieve all comments; skip "MoreComments" objects
                         post.comments.replace_more(limit=0)
-                        for comment in post.comments.list():
-                            comment_data = [
-                                post.id,                       # ID of the post this comment belongs to
-                                post.title,                    # Post title
-                                str(comment.author),
-                                comment.score,
-                                comment.body,
-                                datetime.datetime.utcfromtimestamp(comment.created_utc)
-                            ]
-                            all_comments.append(comment_data)
+                        comment_list = post.comments.list()
                     except Exception as e:
                         st.error(f"Error collecting comments for post {post.id}: {e}")
-
-        return all_posts, all_comments
+                        comment_list = []
+                    
+                    # If comments exist, create one row per comment.
+                    if comment_list:
+                        for comment in comment_list:
+                            comment_author = str(comment.author) if comment.author else None
+                            comment_score = comment.score
+                            comment_body = comment.body
+                            comment_timestamp = datetime.datetime.utcfromtimestamp(comment.created_utc)
+                            
+                            row = [
+                                post_id, post_title, post_author, post_score, post_num_comments,
+                                post_upvote_ratio, post_url, post_timestamp, sorting_method,
+                                comment_author, comment_score, comment_body, comment_timestamp
+                            ]
+                            combined_data.append(row)
+                    else:
+                        # No comments found: add a row with comment fields set to None.
+                        row = [
+                            post_id, post_title, post_author, post_score, post_num_comments,
+                            post_upvote_ratio, post_url, post_timestamp, sorting_method,
+                            None, None, None, None
+                        ]
+                        combined_data.append(row)
+                else:
+                    # Not collecting comments: add one row with comment fields set to None.
+                    row = [
+                        post_id, post_title, post_author, post_score, post_num_comments,
+                        post_upvote_ratio, post_url, post_timestamp, sorting_method,
+                        None, None, None, None
+                    ]
+                    combined_data.append(row)
+                    
+        return combined_data
     except APIException as e:
         st.error(f"Reddit API Exception: {e}")
-        return [], []
+        return []
     except Exception as e:
         st.error(f"Error collecting data: {e}")
-        return [], []
+        return []
 
 # Streamlit app
 def main():
     # Display the logo at the top
-    st.image("DigiPatchLogo.png", width=700)  # Replace with the actual path to your logo file
+    st.image("DigiPatchLogo.png", width=700)  # Replace with your actual logo file path
     st.title("WP4 DigiPatch: Reddit Data Collection")
-    st.markdown("This tool allows users to collect Reddit post data for analysis.")
+    st.markdown("This tool allows users to collect Reddit post and comment data for analysis.")
     st.markdown("https://digipatch.eu/")
 
     # User credentials input
@@ -108,7 +127,7 @@ def main():
     )
     limit = st.number_input('Number of Posts', min_value=1, max_value=1000, value=10)
     
-    # Checkbox to decide whether to collect comments as well
+    # Option to collect comments as well
     collect_comments = st.checkbox('Collect Comments', value=False)
 
     if st.button('Collect Data'):
@@ -117,30 +136,21 @@ def main():
                 reddit = initialize_reddit(client_id, client_secret, username, password)
                 if reddit:
                     with st.spinner('Collecting data...'):
-                        posts, comments = collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_comments)
-                        
-                        if posts:
-                            df_posts = pd.DataFrame(posts, columns=[
-                                'Post ID', 'Title', 'Author', 'Score', 'Comments', 'Upvote Ratio', 'URL', 'Timestamp', 'Sorting Method'
-                            ])
-                            st.write(f"Data collected: **{df_posts.shape[0]} posts**")
-                            st.write(df_posts.head())
-
-                            csv_posts = df_posts.to_csv(index=False).encode('utf-8')
-                            st.download_button(label='Download Posts CSV', data=csv_posts, file_name=f'{subreddit_name}_posts.csv')
-
-                        if collect_comments:
-                            if comments:
-                                df_comments = pd.DataFrame(comments, columns=[
-                                    'Post ID', 'Post Title', 'Comment Author', 'Comment Score', 'Comment Body', 'Comment Timestamp'
-                                ])
-                                st.write(f"Data collected: **{df_comments.shape[0]} comments**")
-                                st.write(df_comments.head())
-
-                                csv_comments = df_comments.to_csv(index=False).encode('utf-8')
-                                st.download_button(label='Download Comments CSV', data=csv_comments, file_name=f'{subreddit_name}_comments.csv')
-                            else:
-                                st.warning("No comments were found for the collected posts.")
+                        data = collect_reddit_data(reddit, subreddit_name, sorting_methods, limit, collect_comments)
+                        if data:
+                            columns = [
+                                "Post ID", "Post Title", "Post Author", "Post Score", "Post Num Comments",
+                                "Post Upvote Ratio", "Post URL", "Post Timestamp", "Sorting Method",
+                                "Comment Author", "Comment Score", "Comment Body", "Comment Timestamp"
+                            ]
+                            df = pd.DataFrame(data, columns=columns)
+                            
+                            st.write(f"Data collected: **{df.shape[0]} records**")
+                            st.write(df.head())
+                            
+                            # Download the unified CSV file
+                            csv = df.to_csv(index=False).encode('utf-8')
+                            st.download_button(label='Download CSV', data=csv, file_name=f'{subreddit_name}_data.csv')
             else:
                 st.error('Please enter a subreddit name')
         else:
