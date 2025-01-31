@@ -1,9 +1,8 @@
 streamlit
 praw
 tqdm
-pandas
-datetime
-time
 matplotlib
 wordcloud
-sklearn
+scikit-learn
+pandas
+numpy
