@@ -3,7 +3,7 @@ import datetime
 import pandas as pd
 import praw
 from praw.exceptions import APIException
-from tqdm import tqdm
+import prawcore
 import time
 
 def add_footer():
@@ -32,9 +32,11 @@ def initialize_reddit(client_id, client_secret, username, password):
         st.error(f"Error initializing Reddit: {e}")
         return None
 
-def adaptive_sleep(retry_count):
-    """Wait longer for each retry if a rate-limit error occurs."""
-    wait_time = 5 * (retry_count + 1)
+def adaptive_sleep(retry_count, wait_multiplier=5):
+    """
+    Adaptive sleep function that waits longer on each retry.
+    """
+    wait_time = wait_multiplier * (retry_count + 1)
     st.warning(f"Rate limit reached. Waiting {wait_time} seconds before retrying...")
     time.sleep(wait_time)
 
@@ -50,12 +52,12 @@ def collect_reddit_data(
     comment_min=None,
     comment_max=None
 ):
-    # Use session state to persist collected data so you don't lose progress.
+    # Retrieve previously collected data from session_state if available.
     if "collected_data" not in st.session_state:
         st.session_state["collected_data"] = []
     collected_data = st.session_state["collected_data"]
 
-    # Determine total iterations (only if a fixed post_limit is set)
+    # Determine total iterations (only if a fixed post_limit is set).
     if post_limit is not None:
         total_iterations = len(subreddits) * len(sorting_methods) * post_limit
     else:
@@ -65,6 +67,7 @@ def collect_reddit_data(
     progress_text = st.empty() if total_iterations is None else None
     current_iteration = 0
 
+    # Iterate over each subreddit.
     for subreddit_name in subreddits:
         try:
             subreddit = reddit.subreddit(subreddit_name)
@@ -72,17 +75,40 @@ def collect_reddit_data(
             st.error(f"Error accessing subreddit {subreddit_name}: {e}")
             continue
 
+        # Iterate over each selected sorting method.
         for sorting_method in sorting_methods:
             st.write(f"Collecting posts from **r/{subreddit_name}** sorted by **{sorting_method}**...")
             try:
-                posts = getattr(subreddit, sorting_method)(limit=post_limit)
+                posts_generator = getattr(subreddit, sorting_method)(limit=post_limit)
             except Exception as e:
                 st.error(f"Error fetching posts for r/{subreddit_name} using {sorting_method}: {e}")
                 continue
 
-            for post in tqdm(posts, desc=f"r/{subreddit_name} - {sorting_method}"):
+            max_retries = 5  # Maximum number of retries for rate-limit errors
+            retry_count = 0
+            while True:
                 try:
-                    # Retrieve post-level information
+                    post = next(posts_generator)
+                    # Reset retry counter upon successful retrieval.
+                    retry_count = 0
+                except StopIteration:
+                    # No more posts in this generator.
+                    break
+                except prawcore.exceptions.TooManyRequests as e:
+                    # Handle HTTP 429 errors (Too Many Requests)
+                    if retry_count < max_retries:
+                        adaptive_sleep(retry_count)
+                        retry_count += 1
+                        continue
+                    else:
+                        st.error(f"Skipping posts from r/{subreddit_name} sorted by {sorting_method} after repeated rate limiting.")
+                        break
+                except Exception as e:
+                    st.error(f"Unexpected error retrieving a post in r/{subreddit_name}: {e}")
+                    break
+
+                try:
+                    # Retrieve post-level details.
                     post_id = post.id
                     post_title = post.title
                     post_author = str(post.author)
@@ -93,30 +119,32 @@ def collect_reddit_data(
                     post_timestamp = datetime.datetime.utcfromtimestamp(post.created_utc)
 
                     if collect_comments:
-                        # Use retry mechanism for potential rate-limit errors when retrieving comments.
-                        retry_count = 0
-                        while retry_count < 5:
+                        # Retrieve comments with retry logic for rate-limit errors.
+                        comment_retry = 0
+                        max_comment_retries = 5
+                        while comment_retry < max_comment_retries:
                             try:
                                 post.comments.replace_more(limit=0)
                                 all_comments = post.comments.list()
                                 break
                             except APIException as e:
-                                if "received 429" in str(e):
-                                    adaptive_sleep(retry_count)
-                                    retry_count += 1
+                                if "429" in str(e):
+                                    adaptive_sleep(comment_retry)
+                                    comment_retry += 1
+                                    continue
                                 else:
                                     st.error(f"Error collecting comments for post {post_id} in r/{subreddit_name}: {e}")
                                     all_comments = []
                                     break
                         else:
-                            st.error(f"Skipping post {post_id} in r/{subreddit_name} due to repeated rate limiting.")
+                            st.error(f"Skipping comments for post {post_id} in r/{subreddit_name} due to repeated rate limiting.")
                             all_comments = []
 
-                        # Select comments based on the chosen method.
+                        # Decide which comments to include based on the selected method.
                         if comment_method == "Limit":
                             comment_list = all_comments[:comment_limit] if comment_limit else all_comments
                         elif comment_method == "Range":
-                            min_index = comment_min - 1 if comment_min else 0
+                            min_index = comment_min - 1 if comment_min else 0  # Convert 1-indexed to 0-indexed.
                             comment_list = all_comments[min_index:comment_max] if comment_max else all_comments[min_index:]
                         elif comment_method == "Maximum":
                             comment_list = all_comments
@@ -124,6 +152,7 @@ def collect_reddit_data(
                             comment_list = []
 
                         if comment_list:
+                            # Create one row per comment.
                             for comment in comment_list:
                                 comment_author = str(comment.author) if comment.author else None
                                 comment_score = comment.score
@@ -136,7 +165,7 @@ def collect_reddit_data(
                                 ]
                                 collected_data.append(row)
                         else:
-                            # If no comments, record the post with empty comment fields.
+                            # If no comments are available, record the post with empty comment fields.
                             row = [
                                 subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                                 post_upvote_ratio, post_url, post_timestamp, sorting_method,
@@ -144,7 +173,7 @@ def collect_reddit_data(
                             ]
                             collected_data.append(row)
                     else:
-                        # When comment collection is disabled.
+                        # When comment collection is disabled, record just the post.
                         row = [
                             subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                             post_upvote_ratio, post_url, post_timestamp, sorting_method,
@@ -161,14 +190,14 @@ def collect_reddit_data(
                 else:
                     progress_text.text(f"Processed {current_iteration} posts...")
                 time.sleep(sleep_time)
-                
+
     st.session_state["collected_data"] = collected_data
     return collected_data
 
 def main():
     st.image("DigiPatchLogo.png", width=700)  # Replace with your logo file path.
     st.title("WP4 DigiPatch: Reddit Data Collection")
-    st.markdown("This tool collects Reddit posts and comments across multiple subreddits for analysis. The collection process is designed to handle unexpected events gracefully, allowing you to resume without restarting.")
+    st.markdown("This tool collects Reddit posts and comments across multiple subreddits for analysis. It is designed to handle unexpected events gracefully, allowing you to resume data collection without starting over.")
     st.markdown("https://digipatch.eu/")
 
     # --- Reddit API Credentials ---
@@ -187,14 +216,14 @@ def main():
         default=['hot']
     )
     
-    # Post limit selection (either fixed limit or maximum)
+    # Post limit selection: fixed limit or maximum.
     post_limit_option = st.radio("Select Post Limit", options=["Limit", "Maximum"], index=0)
     if post_limit_option == "Limit":
         post_limit = st.number_input("Number of Posts per Subreddit (per sorting method)", min_value=1, max_value=10000, value=10)
     else:
         post_limit = None
 
-    # Option to collect comments and choose the retrieval method
+    # Option to collect comments.
     collect_comments = st.checkbox('Collect Comments', value=False)
     comment_method = None
     comment_limit = None
@@ -214,7 +243,7 @@ def main():
 
     sleep_time = st.number_input('Sleep Time (seconds) between API calls', min_value=0.0, value=0.5, step=0.1, format="%.1f")
 
-    # --- Data Collection ---
+    # --- Data Collection Execution ---
     if st.button('Start/Resume Data Collection'):
         if client_id and client_secret and username and password:
             if subreddits_input:
@@ -222,7 +251,6 @@ def main():
                 if not subreddits:
                     st.error("Please enter at least one valid subreddit name.")
                     return
-
                 reddit = initialize_reddit(client_id, client_secret, username, password)
                 if reddit:
                     with st.spinner('Collecting data...'):
@@ -249,8 +277,10 @@ def main():
                             st.write(df.head())
                             csv = df.to_csv(index=False).encode('utf-8')
                             st.download_button(label='Download CSV', data=csv, file_name='reddit_data.csv')
+            else:
+                st.error("Please enter at least one subreddit name.")
         else:
-            st.error('Please enter all Reddit API credentials')
+            st.error("Please enter all Reddit API credentials.")
 
     # --- Option to Clear Collected Data ---
     if st.button("Clear Collected Data"):
