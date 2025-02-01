@@ -34,14 +34,26 @@ def initialize_reddit(client_id, client_secret, username, password):
         return None
 
 # Function to collect posts and comments from multiple subreddits.
-def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect_comments, sleep_time, comment_limit):
+def collect_reddit_data(
+    reddit,
+    subreddits,
+    sorting_methods,
+    post_limit,
+    collect_comments,
+    sleep_time,
+    comment_method=None,
+    comment_limit=None,
+    comment_min=None,
+    comment_max=None
+):
     combined_data = []
+    
     # Calculate total iterations only if a fixed post limit is set.
     if post_limit is not None:
         total_iterations = len(subreddits) * len(sorting_methods) * post_limit
     else:
         total_iterations = None
-    
+
     # Initialize progress indicators.
     progress_bar = None
     progress_text = None
@@ -68,7 +80,7 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect
                 continue
 
             for post in tqdm(posts, desc=f"r/{subreddit_name} - {sorting_method}"):
-                # Post-level details.
+                # Gather post-level details.
                 post_id = post.id
                 post_title = post.title
                 post_author = str(post.author)
@@ -82,11 +94,19 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect
                     try:
                         post.comments.replace_more(limit=0)
                         all_comments = post.comments.list()
-                        # If comment_limit is set, take only that many comments.
-                        if comment_limit is not None:
+                        # Decide which comments to include based on the chosen method.
+                        if comment_method == "Limit":
                             comment_list = all_comments[:comment_limit]
-                        else:
+                        elif comment_method == "Range":
+                            # Convert 1-indexed to 0-indexed:
+                            min_index = comment_min - 1
+                            # Slicing is end-exclusive; user-specified max is inclusive.
+                            comment_list = all_comments[min_index:comment_max]
+                        elif comment_method == "Maximum":
                             comment_list = all_comments
+                        else:
+                            # Fallback in case nothing is selected.
+                            comment_list = []
                     except Exception as e:
                         st.error(f"Error collecting comments for post {post.id} in r/{subreddit_name}: {e}")
                         comment_list = []
@@ -105,7 +125,7 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect
                             ]
                             combined_data.append(row)
                     else:
-                        # No comments found: add one row with comment fields set to None.
+                        # No comments found: add one row with comment fields as None.
                         row = [
                             subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                             post_upvote_ratio, post_url, post_timestamp, sorting_method,
@@ -113,7 +133,7 @@ def collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect
                         ]
                         combined_data.append(row)
                 else:
-                    # Not collecting comments: add one row with comment fields as None.
+                    # If not collecting comments, add one row with empty comment fields.
                     row = [
                         subreddit_name, post_id, post_title, post_author, post_score, post_num_comments,
                         post_upvote_ratio, post_url, post_timestamp, sorting_method,
@@ -163,13 +183,23 @@ def main():
 
     # Option to collect comments.
     collect_comments = st.checkbox('Collect Comments', value=False)
+    
+    # Initialize variables for comment selection.
+    comment_method = None
     comment_limit = None
+    comment_min = None
+    comment_max = None
+
     if collect_comments:
-        comment_limit_option = st.radio("Select Comment Limit per Post", options=["Limit", "Maximum"], index=0)
-        if comment_limit_option == "Limit":
+        comment_method = st.radio("Select Comment Retrieval Method", options=["Limit", "Range", "Maximum"], index=0)
+        if comment_method == "Limit":
             comment_limit = st.number_input("Number of Comments per Post", min_value=1, max_value=10000, value=10)
-        else:
-            comment_limit = None  # No preset limit for comments
+        elif comment_method == "Range":
+            comment_min = st.number_input("Minimum Comment Index (1-based)", min_value=1, max_value=10000, value=1)
+            comment_max = st.number_input("Maximum Comment Index (1-based)", min_value=1, max_value=10000, value=10)
+            if comment_max < comment_min:
+                st.error("Maximum Comment Index must be greater than or equal to Minimum Comment Index.")
+                return
 
     # Sleep time to help mitigate API rate limitations.
     sleep_time = st.number_input('Sleep Time (seconds) between API calls', min_value=0.0, value=0.5, step=0.1, format="%.1f")
@@ -186,7 +216,18 @@ def main():
                 reddit = initialize_reddit(client_id, client_secret, username, password)
                 if reddit:
                     with st.spinner('Collecting data...'):
-                        data = collect_reddit_data(reddit, subreddits, sorting_methods, post_limit, collect_comments, sleep_time, comment_limit)
+                        data = collect_reddit_data(
+                            reddit,
+                            subreddits,
+                            sorting_methods,
+                            post_limit,
+                            collect_comments,
+                            sleep_time,
+                            comment_method,
+                            comment_limit,
+                            comment_min,
+                            comment_max
+                        )
                         if data:
                             columns = [
                                 "Subreddit", "Post ID", "Post Title", "Post Author", "Post Score", "Post Num Comments",
