@@ -217,7 +217,7 @@ def data_parameters() -> dict:
             options=[10, 50, 100, 500, 1000],
             value=100
         ),
-        "collect_comments": st.checkbox('Collect Comments', value=False)
+        "collect_comments": st.checkbox('Collect Comments (under development: might not work as expected)', value=False)
     }
     
     if params["collect_comments"]:
