@@ -2,6 +2,7 @@ import streamlit as st
 import datetime
 import pandas as pd
 import praw
+import re
 from praw.exceptions import APIException, PRAWException
 import prawcore
 import time
@@ -14,7 +15,6 @@ from typing import List, Optional, Generator
 MAX_RETRIES = 5
 BASE_SLEEP_MULTIPLIER = 5
 REDDIT_POST_LIMIT = 1000
-COMMENT_LIMIT = None
 
 # ==============
 # Type Definitions
@@ -120,21 +120,29 @@ def get_post_comments(post: praw.models.Submission,
                      comment_range: Optional[tuple] = None) -> List[dict]:
     """Retrieve and process comments based on selected method"""
     try:
-        post.comments.replace_more(limit=COMMENT_LIMIT)
-        all_comments = post.comments.list()
+        # Replace MoreComments objects with actual comments
+        post.comments.replace_more(limit=None)
         
+        # Get all comments as a flattened list
+        all_comments = []
+        for comment in post.comments.list():
+            if isinstance(comment, praw.models.Comment):
+                all_comments.append(comment)
+        
+        # Apply comment selection method
         if comment_method == "limit":
             comments = all_comments[:comment_lim]
         elif comment_method == "range":
-            start = comment_range[0] - 1 if comment_range else 0
+            start = max(comment_range[0] - 1, 0) if comment_range else 0
             end = comment_range[1] if comment_range else None
             comments = all_comments[start:end]
         else:
             comments = all_comments
             
-        return [process_comment(c) for c in comments if not c.body == "[deleted]"]
-    except APIException as e:
-        st.error(f"Comment error: {str(e)}")
+        return [process_comment(c) for c in comments if c.body not in ["[deleted]", "[removed]"]]
+    
+    except Exception as e:
+        st.error(f"Error retrieving comments: {str(e)}")
         return []
 
 def collect_reddit_data(reddit: praw.Reddit,
@@ -145,29 +153,34 @@ def collect_reddit_data(reddit: praw.Reddit,
                        comment_method: str,
                        comment_params: dict) -> Generator:
     """Main data collection generator"""
-    total_posts = len(subreddits) * len(sorting_methods) * post_limit
-    progress_bar = st.progress(0)
+    total_operations = len(subreddits) * len(sorting_methods) * post_limit
+    processed = 0
     
-    for i, subreddit in enumerate(subreddits):
+    for subreddit in subreddits:
         try:
             subreddit_obj = reddit.subreddit(subreddit)
             for method in sorting_methods:
                 try:
                     posts = getattr(subreddit_obj, method)(limit=post_limit)
-                    for post_idx, post in enumerate(posts):
-                        # Always store post metadata
+                    for post in posts:
+                        # Process post metadata
                         post_data = process_post(post, subreddit, method)
                         yield ("post", post_data)
                         
-                        # Store comments if enabled
+                        # Process comments if enabled
                         if collect_comments:
-                            comments = get_post_comments(post, comment_method, **comment_params)
+                            comments = get_post_comments(
+                                post, 
+                                comment_method.lower(), 
+                                **comment_params
+                            )
                             for comment in comments:
                                 yield ("comment", comment)
                         
                         # Update progress
-                        progress = ((i + 1) * (post_idx + 1)) / total_posts
-                        progress_bar.progress(min(progress, 1.0))
+                        processed += 1
+                        progress = processed / total_operations
+                        st.progress(min(progress, 1.0))
                         
                 except PRAWException as e:
                     st.error(f"Error in {method} posts: {str(e)}")
@@ -222,12 +235,19 @@ def data_parameters() -> dict:
         elif params["comment_method"] == "Range":
             cols = st.columns(2)
             with cols[0]:
-                params["comment_params"]["comment_range"] = (
-                    st.number_input("Start Index", min_value=1, value=1),
-                    st.number_input("End Index", min_value=1, value=10)
-                )
+                start = st.number_input("Start Index", min_value=1, value=1)
+            with cols[1]:
+                end = st.number_input("End Index", min_value=1, value=10)
+            params["comment_params"]["comment_range"] = (start, end)
     
     return params
+
+def generate_filename(subreddits: List[str]) -> str:
+    """Generate filename with subreddit names and timestamp"""
+    clean_subs = [re.sub(r'\W+', '', sub) for sub in subreddits]
+    subs_str = "_".join(clean_subs)[:50]  # Limit to 50 characters
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"reddit_data_{subs_str}_{timestamp}.csv"
 
 # ==============
 # Main App
@@ -293,11 +313,14 @@ def main():
         
         st.dataframe(df.head(10), use_container_width=True)
         
+        # Generate filename with subreddit names
+        filename = generate_filename(params["subreddits"])
         csv = df.to_csv(index=False).encode('utf-8')
+        
         st.download_button(
             "💾 Download CSV",
             data=csv,
-            file_name="reddit_data.csv",
+            file_name=filename,
             mime="text/csv"
         )
         
