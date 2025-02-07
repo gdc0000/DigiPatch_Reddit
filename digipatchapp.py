@@ -26,7 +26,7 @@ class RedditDataStore:
     @property
     def all_data(self):
         """Merge posts and comments if comments exist.
-           If comments were downloaded, remove duplicate rows based on 'Comment Body'."""
+           When comments are downloaded, remove duplicate comments per post based on 'Comment Body'."""
         if self.comments:
             df_posts = pd.DataFrame(self.posts, columns=[
                 "Subreddit", "Post ID", "Title", "Author", "Score", 
@@ -36,9 +36,11 @@ class RedditDataStore:
                 "Post ID", "Comment Author", "Comment Score", 
                 "Comment Body", "Comment Timestamp"
             ])
+            # Normalize comment bodies by stripping extra whitespace
+            df_comments["Comment Body"] = df_comments["Comment Body"].str.strip()
+            # Remove duplicate comments for the same post
+            df_comments = df_comments.drop_duplicates(subset=["Post ID", "Comment Body"])
             merged = pd.merge(df_posts, df_comments, on="Post ID", how="right")
-            # Remove duplicate comments based on Comment Body
-            merged = merged.drop_duplicates(subset=["Comment Body"])
             return merged
         else:
             return pd.DataFrame(self.posts, columns=[
