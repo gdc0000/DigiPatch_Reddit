@@ -106,7 +106,7 @@ def process_post(post: praw.models.Submission, subreddit: str, sorting_method: s
         "Comments Count": post.num_comments,
         "Upvote Ratio": post.upvote_ratio,
         "URL": post.url,
-        "Created": datetime.datetime.utcfromtimestamp(post.created_utc),
+        "Created": datetime.datetime.fromtimestamp(post.created_utc, datetime.timezone.utc),
         "Sort Method": sorting_method
     }
 
@@ -117,7 +117,7 @@ def process_comment(comment: praw.models.Comment) -> dict:
         "Comment Author": str(comment.author) if comment.author else None,
         "Comment Score": comment.score,
         "Comment Body": comment.body,
-        "Comment Timestamp": datetime.datetime.utcfromtimestamp(comment.created_utc)
+        "Comment Timestamp": datetime.datetime.fromtimestamp(comment.created_utc, datetime.timezone.utc)
     }
 
 @handle_rate_limit
@@ -158,6 +158,17 @@ def collect_reddit_data(reddit: praw.Reddit,
                 yield ("progress", progress)
         except PRAWException as e:
             st.error(f"Error retrieving posts with method '{method}': {str(e)}")
+
+def rerun_app():
+    """Attempt to rerun the app."""
+    try:
+        st.experimental_rerun()
+    except AttributeError:
+        # Fallback: use the script run context to request a rerun
+        from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            ctx.request_rerun()
 
 # ======================
 # UI Components
@@ -264,10 +275,9 @@ def main():
             ])
             if params.get("remove_duplicates", False):
                 df = df.drop_duplicates(subset=["Post ID"])
-        st.markdown(f"""
-        - Total posts collected: **{len(st.session_state.data_store.posts)}**
-        - Total comments collected: **{len(st.session_state.data_store.comments)}**
-        """)
+        # Display total instances collected (number of rows in the dataset)
+        total_instances = len(df)
+        st.markdown(f"**Total instances collected: {total_instances}**")
         st.dataframe(df.head(10), use_container_width=True)
         
         # Generate filename and provide a CSV download button.
@@ -277,7 +287,7 @@ def main():
         
         if st.button("❌ Clear Data"):
             st.session_state.data_store = RedditDataStore()
-            st.experimental_rerun()
+            rerun_app()
     
     add_footer()
 
