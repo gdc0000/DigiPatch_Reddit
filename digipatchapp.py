@@ -26,7 +26,7 @@ class RedditDataStore:
         
     @property
     def all_data(self):
-        """Merge posts and comments into long format"""
+        """Merge posts and comments into long format using a RIGHT JOIN on posts (i.e., only posts with comments)"""
         df_posts = pd.DataFrame(self.posts, columns=[
             "Subreddit", "Post ID", "Title", "Author", "Score", 
             "Comments Count", "Upvote Ratio", "URL", "Created", "Sort Method"
@@ -37,7 +37,8 @@ class RedditDataStore:
             "Comment Body", "Comment Timestamp"
         ])
         
-        return pd.merge(df_posts, df_comments, on="Post ID", how="left")
+        # Change join from left to right as requested
+        return pd.merge(df_posts, df_comments, on="Post ID", how="right")
 
 # ==============
 # Core Functions
@@ -115,9 +116,9 @@ def process_comment(comment: praw.models.Comment) -> dict:
 
 @handle_rate_limit
 def get_post_comments(post: praw.models.Submission, 
-                     comment_method: str, 
-                     comment_lim: Optional[int] = None,
-                     comment_range: Optional[tuple] = None) -> List[dict]:
+                      comment_method: str, 
+                      comment_lim: Optional[int] = None,
+                      comment_range: Optional[tuple] = None) -> List[dict]:
     """Retrieve and process comments based on selected method"""
     try:
         # Replace MoreComments objects with actual comments
@@ -180,7 +181,7 @@ def collect_reddit_data(reddit: praw.Reddit,
                         # Update progress
                         processed += 1
                         progress = processed / total_operations
-                        st.progress(min(progress, 1.0))
+                        yield ("progress", progress)
                         
                 except PRAWException as e:
                     st.error(f"Error in {method} posts: {str(e)}")
@@ -286,18 +287,25 @@ def main():
             comment_params=params.get("comment_params", {})
         )
         
-        with st.status("Collecting data...", expanded=True) as status:
+        # Use spinner for a status message and create a single progress bar
+        progress_bar = st.progress(0)
+        with st.spinner("Collecting data..."):
             try:
-                for record_type, data in data_gen:
+                for record in data_gen:
+                    record_type = record[0]
+                    data = record[1]
                     if record_type == "post":
                         st.session_state.data_store.posts.append(data)
+                        st.write(f"Collected post: {data.get('Post ID', '')}")
                     elif record_type == "comment":
                         st.session_state.data_store.comments.append(data)
-                    st.write(f"Collected {record_type}: {data.get('Post ID', '')}")
+                        st.write(f"Collected comment for Post ID: {data.get('Post ID', '')}")
+                    elif record_type == "progress":
+                        # update the progress bar; ensure the value is between 0 and 1
+                        progress_bar.progress(min(data, 1.0))
             except Exception as e:
                 st.error(f"Collection failed: {str(e)}")
-            finally:
-                status.update(label="Collection complete!", state="complete")
+        st.success("Collection complete!")
     
     # Data Management
     if st.session_state.data_store.posts:
@@ -326,7 +334,7 @@ def main():
         
         if st.button("❌ Clear Data"):
             st.session_state.data_store = RedditDataStore()
-            st.rerun()
+            st.experimental_rerun()
     
     add_footer()
 
