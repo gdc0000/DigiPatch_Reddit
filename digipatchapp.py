@@ -7,7 +7,7 @@ from praw.exceptions import APIException, PRAWException
 import prawcore
 import time
 from functools import wraps
-from typing import List, Optional, Generator
+from typing import List, Optional
 
 # ======================
 # Configuration Constants
@@ -25,7 +25,8 @@ class RedditDataStore:
 
     @property
     def all_data(self):
-        """Merge posts and comments if comments exist, otherwise return posts only"""
+        """Merge posts and comments if comments exist, otherwise return posts only.
+           When merging, a RIGHT JOIN is used so that only posts with comments appear."""
         if self.comments:
             df_posts = pd.DataFrame(self.posts, columns=[
                 "Subreddit", "Post ID", "Title", "Author", "Score", 
@@ -46,7 +47,7 @@ class RedditDataStore:
 # Helper Functions
 # ======================
 def add_footer() -> None:
-    """Add a persistent footer to all pages"""
+    """Add a persistent footer to all pages."""
     st.markdown("---")
     st.markdown("### **Gabriele Di Cicco, PhD in Social Psychology**")
     st.markdown("""
@@ -126,31 +127,11 @@ def get_post_comments(post: praw.models.Submission, comment_lim: int) -> List[di
         st.error(f"Error retrieving comments: {str(e)}")
         return []
 
-def collect_reddit_data(reddit: praw.Reddit,
-                        subreddit: str,
-                        sorting_methods: List[str],
-                        post_limit: int,
-                        collect_comments: bool,
-                        comment_lim: int) -> Generator:
-    """Main data collection generator."""
-    total_operations = len(sorting_methods) * post_limit
-    processed = 0
-    subreddit_obj = reddit.subreddit(subreddit)
-    for method in sorting_methods:
-        try:
-            posts = getattr(subreddit_obj, method)(limit=post_limit)
-            for post in posts:
-                post_data = process_post(post, subreddit, method)
-                yield ("post", post_data)
-                if collect_comments:
-                    comments = get_post_comments(post, comment_lim)
-                    for comment in comments:
-                        yield ("comment", comment)
-                processed += 1
-                progress = processed / total_operations
-                yield ("progress", progress)
-        except PRAWException as e:
-            st.error(f"Error retrieving posts with method '{method}': {str(e)}")
+def generate_filename(subreddit: str) -> str:
+    """Generate a filename based on subreddit and timestamp."""
+    clean_sub = re.sub(r'\W+', '', subreddit)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"reddit_data_{clean_sub}_{timestamp}.csv"
 
 # ======================
 # UI Components
@@ -188,12 +169,6 @@ def data_parameters() -> dict:
         params["remove_duplicates"] = st.checkbox("Remove duplicate posts (by Post ID)", value=True)
     return params
 
-def generate_filename(subreddit: str) -> str:
-    """Generate a filename based on subreddit and timestamp."""
-    clean_sub = re.sub(r'\W+', '', subreddit)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"reddit_data_{clean_sub}_{timestamp}.csv"
-
 # ======================
 # Main App
 # ======================
@@ -211,68 +186,83 @@ def main():
     creds = credential_inputs()
     params = data_parameters()
     
-    # Start data collection when the button is pressed.
     if st.button("🚀 Start/Resume Collection"):
         if not all(creds.values()):
             st.error("Missing API credentials!")
             return
-            
+        
         reddit = initialize_reddit(**creds)
         if not reddit:
             return
-            
-        data_gen = collect_reddit_data(
-            reddit=reddit,
-            subreddit=params["subreddit"],
-            sorting_methods=params["sorting_methods"],
-            post_limit=params["post_limit"],
-            collect_comments=params["collect_comments"],
-            comment_lim=params.get("comment_lim", 0)
-        )
         
-        progress_bar = st.progress(0)
+        subreddit = params["subreddit"]
+        sorting_methods = params["sorting_methods"]
+        post_limit = params["post_limit"]
+        collect_comments = params["collect_comments"]
+        comment_lim = params.get("comment_lim", 0)
+        
+        # Total number of posts across sorting methods.
+        total_posts = post_limit * len(sorting_methods)
+        post_counter = 0
+        
+        # Global posts progress bar.
+        posts_progress_bar = st.progress(0)
+        # Placeholder for the per-post comment progress bar (only used if comments are collected).
+        comment_bar_placeholder = st.empty() if collect_comments else None
+        
+        subreddit_obj = reddit.subreddit(subreddit)
         with st.spinner("Collecting data..."):
-            try:
-                for record in data_gen:
-                    record_type, data = record
-                    if record_type == "post":
-                        st.session_state.data_store.posts.append(data)
-                        st.write(f"Collected post: {data.get('Post ID', '')}")
-                    elif record_type == "comment":
-                        st.session_state.data_store.comments.append(data)
-                        st.write(f"Collected comment for Post ID: {data.get('Post ID', '')}")
-                    elif record_type == "progress":
-                        progress_bar.progress(min(data, 1.0))
-            except Exception as e:
-                st.error(f"Collection failed: {str(e)}")
+            for method in sorting_methods:
+                try:
+                    posts = getattr(subreddit_obj, method)(limit=post_limit)
+                    for post in posts:
+                        post_data = process_post(post, subreddit, method)
+                        st.session_state.data_store.posts.append(post_data)
+                        post_counter += 1
+                        posts_progress_bar.progress(post_counter / total_posts)
+                        
+                        if collect_comments:
+                            comments = get_post_comments(post, comment_lim)
+                            if comments:
+                                comment_counter = 0
+                                # Create a temporary progress bar for this post's comments.
+                                comment_progress_bar = comment_bar_placeholder.progress(0)
+                                for comment in comments:
+                                    st.session_state.data_store.comments.append(comment)
+                                    comment_counter += 1
+                                    comment_progress_bar.progress(comment_counter / len(comments))
+                                # Clear the comment progress bar for the next post.
+                                comment_bar_placeholder.empty()
+                except PRAWException as e:
+                    st.error(f"Error retrieving posts with method '{method}': {str(e)}")
+        
         st.success("Collection complete!")
-    
-    # Data Management and Display
-    if st.session_state.data_store.posts:
-        st.header("📦 Collected Data")
-        if params["collect_comments"]:
-            df = st.session_state.data_store.all_data
-        else:
-            df = pd.DataFrame(st.session_state.data_store.posts, columns=[
-                "Subreddit", "Post ID", "Title", "Author", "Score", 
-                "Comments Count", "Upvote Ratio", "URL", "Created", "Sort Method"
-            ])
-            if params.get("remove_duplicates", False):
-                df = df.drop_duplicates(subset=["Post ID"])
-        st.markdown(f"""
-        - Total posts collected: **{len(st.session_state.data_store.posts)}**
-        - Total comments collected: **{len(st.session_state.data_store.comments)}**
-        """)
-        st.dataframe(df.head(10), use_container_width=True)
         
-        # Generate filename and provide a CSV download button.
-        filename = generate_filename(params["subreddit"])
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("💾 Download CSV", data=csv, file_name=filename, mime="text/csv")
-        
-        if st.button("❌ Clear Data"):
-            st.session_state.data_store = RedditDataStore()
-            st.experimental_rerun()
+        # Data Management and Display
+        if st.session_state.data_store.posts:
+            st.header("📦 Collected Data")
+            if collect_comments:
+                df = st.session_state.data_store.all_data
+            else:
+                df = pd.DataFrame(st.session_state.data_store.posts, columns=[
+                    "Subreddit", "Post ID", "Title", "Author", "Score", 
+                    "Comments Count", "Upvote Ratio", "URL", "Created", "Sort Method"
+                ])
+                if params.get("remove_duplicates", False):
+                    df = df.drop_duplicates(subset=["Post ID"])
+            st.markdown(f"""
+            - Total posts collected: **{len(st.session_state.data_store.posts)}**
+            - Total comments collected: **{len(st.session_state.data_store.comments)}**
+            """)
+            st.dataframe(df.head(10), use_container_width=True)
+            
+            filename = generate_filename(subreddit)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("💾 Download CSV", data=csv, file_name=filename, mime="text/csv")
+            
+            if st.button("❌ Clear Data"):
+                st.session_state.data_store = RedditDataStore()
+                st.experimental_rerun()
     
     add_footer()
 
