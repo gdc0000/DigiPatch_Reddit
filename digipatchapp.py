@@ -38,7 +38,7 @@ class RedditDataStore:
             ])
             # Normalize comment bodies by stripping extra whitespace
             df_comments["Comment Body"] = df_comments["Comment Body"].str.strip()
-            # Remove duplicate comments for the same post
+            # Remove duplicate comments for the same post based on Post ID and Comment Body
             df_comments = df_comments.drop_duplicates(subset=["Post ID", "Comment Body"])
             merged = pd.merge(df_posts, df_comments, on="Post ID", how="right")
             return merged
@@ -160,15 +160,11 @@ def collect_reddit_data(reddit: praw.Reddit,
             st.error(f"Error retrieving posts with method '{method}': {str(e)}")
 
 def rerun_app():
-    """Attempt to rerun the app."""
-    try:
+    """Attempt to rerun the app. If st.experimental_rerun() is not available, display an info message."""
+    if hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
-    except AttributeError:
-        # Fallback: use the script run context to request a rerun
-        from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
-        ctx = get_script_run_ctx()
-        if ctx is not None:
-            ctx.request_rerun()
+    else:
+        st.info("Data cleared. Please refresh the page manually.")
 
 # ======================
 # UI Components
